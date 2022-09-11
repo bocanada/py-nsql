@@ -187,32 +187,5 @@ def file(
     console.log("Done!")
 
 
-@runner.command()
-def wsdl(
-    query_id: str = typer.Argument(..., help="NSQL Query ID"),
-    env: Optional[str] = typer.Option(
-        None,
-        "--env",
-        "-e",
-        help="Environment name.",
-        autocompletion=complete_env,
-    ),
-):
-    env_url, username, passwd = get_env_creds(env)
-    with XOG(env_url, username, passwd) as xog:
-        xog.query_types(QueryID(query_id))
-
-
-@app.command(help="Highlights SQL")
-def highlight(
-    query: Path = typer.Argument(..., exists=True),
-    line_numbers: bool = typer.Option(False, "-n"),
-):
-    from rich.syntax import Syntax
-
-    syntax = Syntax.from_path(str(query), lexer="sql", line_numbers=line_numbers)
-    console.print(syntax)
-
-
 if __name__ == "__main__":
     app(prog_name="nsql")
