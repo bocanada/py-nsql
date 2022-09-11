@@ -14,13 +14,7 @@ from nsql.utils import (
     get_envs,
     save_envs,
 )
-from nsql.xog import (
-    Databases,
-    Format,
-    QueryID,
-    XOG,
-    Writer,
-)
+from nsql.xog import Databases, Format, QueryID, Writer, XOG
 
 
 app = typer.Typer(name="nsql", pretty_exceptions_show_locals=False)
@@ -34,9 +28,9 @@ app.add_typer(creds, name="credentials", help="Manages credentials")
 
 
 @app.command(
-    short_help="Converts SQL to NSQL.",
+    short_help="Transpiles SQL to NSQL.",
 )
-def convert(
+def transpile(
     sql: Path = typer.Argument(..., exists=True, readable=True),
     output: typer.FileTextWrite = typer.Option(
         "-", "--output", "-o", help="Save NSQL to FILENAME.", writable=True
@@ -98,7 +92,7 @@ def run_with_id(
     format: Format = typer.Option(
         Format.table, "--format", "-f", case_sensitive=False, show_choices=True
     ),
-    xog: str = typer.Option(None, hidden=True, lazy=True),
+    xog: str = typer.Option(None, hidden=True),
 ):
     """
     Runs a query on the specified ENV and writes it to STDOUT or OUTPUT.
@@ -137,7 +131,9 @@ def file(
         case_sensitive=False,
         help="Database ID in which the query is supposed to run on.",
     ),
-    to_nsql: bool = typer.Option(False, help="Translates SQL to NSQL."),
+    to_nsql: bool = typer.Option(
+        False, "--to-nsql", "-t", help="Transpiles SQL to NSQL before running it."
+    ),
     env: Optional[str] = typer.Option(
         None,
         "--env",
@@ -168,6 +164,8 @@ def file(
     """
 
     env_url, username, passwd = get_env_creds(env)
+
+    to_nsql = to_nsql or Path(nsql_path.name).match("*.sql")
 
     if nsql_path.isatty():
         console.print("Copy & paste your NSQL")
