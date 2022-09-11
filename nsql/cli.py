@@ -35,20 +35,20 @@ app.add_typer(creds, name="credentials", help="Manages credentials")
 
 @app.command(
     short_help="Converts SQL to NSQL.",
-    help="""
-Converts SQL to NSQL.\n
-Some limitations apply:\n
-    - The SQL MUST have a WHERE clause.\n
-    - The SQL should not have any sub-queries/function calls inside SELECT.\n
-    - CTEs are prohibited. NSQL doesn't permit any kind of code before the SELECT keyword.
-""",
 )
 def convert(
     sql: Path = typer.Argument(..., exists=True, readable=True),
     output: typer.FileTextWrite = typer.Option(
-        "-", "--output", "-o", help="Save nsql to FILENAME.", writable=True
+        "-", "--output", "-o", help="Save NSQL to FILENAME.", writable=True
     ),
 ):
+    """
+    Converts SQL to NSQL.\n
+    Some limitations apply:\n
+        - The SQL MUST have a WHERE clause.\n
+        - Spaces between the OPENPAREN and OVER on window functions are not allowed.\n
+        - CTEs are prohibited. NSQL doesn't permit any kind of code before the SELECT keyword.\n
+    """
     with sql.open("r") as f:
         output.write(parser.sql_to_nsql(f))
 
@@ -120,7 +120,6 @@ def run_with_id(
         query_id = QueryID(query_id)
 
         result = client.run_query(query_id)[:limit]
-        # if output is not stdout
         p.add_task(description=f"Writing {len(result)} lines to {output.name}...")
         Writer(output, format, console).write(query_id, result)
 
@@ -128,7 +127,7 @@ def run_with_id(
 @runner.command()
 def file(
     nsql_path: typer.FileText = typer.Argument(
-        ..., help="NSQL code file path.", exists=True, readable=True
+        ..., help="SQL/NSQL code file path.", exists=True, readable=True
     ),
     db: Databases = typer.Option(
         Databases.niku,
@@ -138,6 +137,7 @@ def file(
         case_sensitive=False,
         help="Database ID in which the query is supposed to run on.",
     ),
+    to_nsql: bool = typer.Option(False, help="Translates SQL to NSQL."),
     env: Optional[str] = typer.Option(
         None,
         "--env",
@@ -162,23 +162,17 @@ def file(
         help="Limit output to n lines.",
         writable=True,
     ),
-    launch: bool = typer.Option(False, "--launch", "-l", help="Open the CSV"),
 ):
     """
     XOGs and runs a file to ENV and writes it to STDOUT or OUTPUT.
     """
-    if output.isatty() and launch:
-        console.log(
-            "--launch and --output = (STDIN or -) are not compatible.", style="red"
-        )
-        raise typer.Abort()
 
     env_url, username, passwd = get_env_creds(env)
 
     if nsql_path.isatty():
         console.print("Copy & paste your NSQL")
 
-    nsql = parser.sql_to_nsql(nsql_path)
+    nsql = parser.sql_to_nsql(nsql_path) if to_nsql else nsql_path.read()
 
     with Progress(
         SpinnerColumn(),
