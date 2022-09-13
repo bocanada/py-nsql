@@ -5,7 +5,8 @@ from dataclasses import dataclass, field
 from enum import Enum
 from io import StringIO
 import json
-from typing import Any, Final, NewType, Optional, TypeAlias
+from pathlib import Path
+from typing import Any, Final, NewType, Optional, TextIO, TypeAlias
 
 from httpx import Client
 from lxml import etree
@@ -43,6 +44,14 @@ class ContentPackageException(Exception):
     ...
 
 
+class HTTPError(Exception):
+    ...
+
+
+class XMLError(Exception):
+    ...
+
+
 class Databases(str, Enum):
     dwh = "Datawarehouse"
     niku = "Niku"
@@ -59,12 +68,13 @@ class XOG:
     base_url: str
     username: str
     password: str = field(repr=False)
+    timeout: float = field(default=15)
 
     session_id: str = field(init=False, repr=False)
     c: Client = field(init=False, repr=False)
 
     def __post_init__(self):
-        self.c = Client(base_url=self.base_url)
+        self.c = Client(base_url=self.base_url, timeout=self.timeout)
         self.login()
 
     def login(self):
@@ -110,7 +120,12 @@ class XOG:
                 create_session_id_envelope(self.session_id, body), xml_declaration=True
             ),
         )
-        tree = etree.fromstring(r.text)
+        if r.is_error:
+            raise HTTPError(r.text)
+        try:
+            tree = etree.fromstring(r.text)
+        except etree.XMLSyntaxError as e:
+            raise XMLError(r.text) from e
         return tree
 
     def upload_query(self, nsql: str, db: Databases) -> QueryID:
@@ -127,13 +142,84 @@ class XOG:
             raise QueryRunnerError(str(exc[0]))  # type: ignore
         return get_results(tree)
 
-    def __enter__(self):
+    def __enter__(self) -> XOG:
         return self
 
     def __exit__(self, *_, **__):
         if not self.c.is_closed:
             self.logout()
         self.c.close()
+
+
+class Writer:
+    def __init__(self, buff: FileTextWrite, format: Format, console: Console) -> None:
+        self.buff = buff
+        self.console = console
+        self.format = format
+
+    def pretty_print(self):
+        return self.buff.isatty()
+
+    def _result(self, query_id: QueryID, items: QueryResult):
+        match self.format:
+            case Format.json if self.pretty_print():
+                return self.to_dict(items)
+            case Format.json:
+                return self.to_json(items)
+            case Format.csv:
+                return self.to_csv(items)
+            case Format.table if not self.pretty_print():
+                return self.to_csv(items, delimiter="\t")
+            case Format.table:
+                return self.to_table(query_id, items)
+
+    def write_xml(self, result: etree._Element) -> int:
+        content = etree.tostring(result, pretty_print=True, encoding="unicode")
+        return self.buff.write(content)
+
+    def write(self, query_id: QueryID, items: QueryResult) -> None:
+        result = self._result(query_id, items)
+        if self.pretty_print():
+            self.console.print(result)
+        else:
+            self.buff.write(result)  # type: ignore
+
+    def to_table(self, query_id: QueryID, items: QueryResult) -> Table:
+        if not items:
+            raise EmptyQueryResultError()
+
+        table = Table(
+            title=query_id,
+            caption=f"Got {len(items)} records.",
+            show_lines=True,
+            highlight=True,
+        )
+        for column in items[0]:
+            table.add_column(column)
+
+        for row in items:
+            table.add_row(*row.values())
+        return table
+
+    def to_csv(self, items: QueryResult, delimiter=",") -> CSV:
+        if not items:
+            raise EmptyQueryResultError()
+        buff = StringIO()
+        dict_writer = DictWriter(buff, items[0].keys(), delimiter=delimiter)
+        dict_writer.writeheader()
+        dict_writer.writerows(items)
+        return buff.getvalue()
+
+    def to_dict(self, items: QueryResult) -> dict[str, QueryResult]:
+        if not items:
+            raise EmptyQueryResultError()
+        return {"records": items}
+
+    def to_json(self, items: QueryResult) -> str:
+        return json.dumps(self.to_dict(items), indent=4)
+
+
+# Functions used by XOG
 
 
 def build_content_pack(nsql_code: str, db: Databases) -> etree._Element:
@@ -161,71 +247,6 @@ def build_content_pack(nsql_code: str, db: Databases) -> etree._Element:
     nsql = etree.SubElement(query, "nsql", dbId=db.value, dbVendor="all")
     nsql.text = etree.CDATA(nsql_code)
     return root
-
-
-class Writer:
-    def __init__(self, buff: FileTextWrite, format: Format, console: Console) -> None:
-        self.buff = buff
-        self.console = console
-        self.format = format
-
-    def pretty_print(self):
-        return self.buff.isatty()
-
-    def _result(self, query_id: QueryID, items: QueryResult):
-        match self.format:
-            case Format.json if self.pretty_print():
-                return self.to_dict(items)
-            case Format.json:
-                return self.to_json(items)
-            case Format.csv:
-                return self.to_csv(items)
-            case Format.table:
-                return self.to_table(query_id, items)
-
-    def write(self, query_id: QueryID, items: QueryResult) -> None:
-        result = self._result(query_id, items)
-        if self.pretty_print():
-            self.console.print(result)
-        else:
-            self.buff.write(result)
-
-    def to_table(self, query_id: QueryID, items: QueryResult) -> Table:
-        if not items:
-            raise EmptyQueryResultError()
-
-        table = Table(
-            title=query_id,
-            caption=f"Got {len(items)} records.",
-            show_lines=True,
-            highlight=True,
-        )
-        for column in items[0]:
-            table.add_column(column)
-
-        for row in items:
-            table.add_row(*row.values())
-        return table
-
-    def to_csv(self, items: QueryResult) -> CSV:
-        if not items:
-            raise EmptyQueryResultError()
-        buff = StringIO()
-        dict_writer = DictWriter(buff, items[0].keys())
-        dict_writer.writeheader()
-        dict_writer.writerows(items)
-        return buff.getvalue()
-
-    def to_dict(self, items: QueryResult) -> dict[str, QueryResult]:
-        if not items:
-            raise EmptyQueryResultError()
-        return {"records": items}
-
-    def to_json(self, items: QueryResult) -> str:
-        return json.dumps(self.to_dict(items), indent=4)
-
-
-# Functions used by XOG
 
 
 def create_envelope(
@@ -289,3 +310,13 @@ def get_results(root: etree._Element) -> QueryResult:
             "//Query:Record", namespaces={"Query": "http://www.niku.com/xog/Query"}
         )
     ]
+
+
+def parse_xml(f: TextIO) -> etree._Element:
+    et = etree.parse(f)
+    return et.getroot()
+
+
+def read_xml(path: Path) -> etree._Element:
+    with path.open("r") as f:
+        return parse_xml(f)
