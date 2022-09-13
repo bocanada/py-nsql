@@ -6,7 +6,7 @@ from enum import Enum
 from io import StringIO
 import json
 from pathlib import Path
-from typing import Any, Final, NewType, Optional, TextIO, TypeAlias
+from typing import Any, Final, NewType, TextIO, TypeAlias
 
 from httpx import Client
 from lxml import etree
@@ -78,15 +78,9 @@ class XOG:
         self.login()
 
     def login(self):
-        r = self.c.post(
-            "niku/xog",
-            headers={"Content-Type": "text/xml; charset=utf-8"},
-            content=etree.tostring(
-                create_login_envelope(self.username, self.password),
-                xml_declaration=True,
-            ),
+        tree = self.send(
+            create_login_envelope(self.username, self.password), should_auth=False
         )
-        tree = etree.fromstring(r.text)
         exc = tree.xpath("//Exception/text()")
         if exc:
             raise InvalidLoginError(str(exc[0]))  # type: ignore
@@ -94,31 +88,27 @@ class XOG:
         return self.session_id
 
     def logout(self):
-        return self.c.post(
-            "niku/xog",
-            headers={"Content-Type": "text/xml; charset=utf-8"},
-            content=etree.tostring(
-                create_logout_envelope(self.session_id),
-                xml_declaration=True,
-            ),
+        """
+        Logs out from XOG
+        """
+        return self.send(create_logout_body())
+
+    def send(self, body: etree._Element, should_auth: bool = True):
+        """
+        Sends a XOG.
+
+        Returns the response as an Element.
+
+        If HTTPStatus != 200, it raises an HTTPError.
+        If XML is malformed, it raises an XMLError from XMLSyntaxError.
+        """
+        body = (
+            create_session_id_envelope(self.session_id, body) if should_auth else body
         )
-
-    def wsdl(self, where: str, path: str) -> etree._Element:
-        r = self.c.get(f"niku/wsdl/{where}/{path}")
-        return etree.fromstring(r.text)
-
-    def query_types(self, query_id: QueryID):
-        tree = self.wsdl("Query", query_id)
-        p = tree.xpath(f"//*[@name='{query_id}']/*")
-        print(p)
-
-    def send(self, body: etree._Element):
         r = self.c.post(
             "niku/xog",
             headers={"Content-Type": "text/xml; charset=utf-8"},
-            content=etree.tostring(
-                create_session_id_envelope(self.session_id, body), xml_declaration=True
-            ),
+            content=etree.tostring(body, xml_declaration=True),
         )
         if r.is_error:
             raise HTTPError(r.text)
@@ -129,6 +119,9 @@ class XOG:
         return tree
 
     def upload_query(self, nsql: str, db: Databases) -> QueryID:
+        """
+        XOGs a query (ContentPackage)
+        """
         tree = self.send(build_content_pack(nsql, db))
         exc = tree.xpath("//Exception/text()")
         if exc:
@@ -136,6 +129,9 @@ class XOG:
         return QUERY_CODE
 
     def run_query(self, query_id: QueryID) -> QueryResult:
+        """
+        Sends a Query XOG
+        """
         tree = self.send(create_query_body(query_id))
         exc = tree.xpath("//Exception/text()")
         if exc:
@@ -148,6 +144,7 @@ class XOG:
     def __exit__(self, *_, **__):
         if not self.c.is_closed:
             self.logout()
+
         self.c.close()
 
 
@@ -278,9 +275,8 @@ def create_session_id_envelope(session_id: str, payload_root: etree._Element):
     )
 
 
-def create_logout_envelope(session_id: str):
-    root = etree.Element(etree.QName(NS["xog"], "Logout"))
-    return create_session_id_envelope(session_id, root)
+def create_logout_body():
+    return etree.Element(etree.QName(NS["xog"], "Logout"))
 
 
 def create_login_envelope(username: str, password: str):
