@@ -23,87 +23,79 @@ def create_select(is_dim: bool, select: str, alias: str):
     return f"@SELECT:{'DIM' + ('' if is_dim else '_PROP')}:USER_DEF:IMPLIED:T:{select}:{alias}@"
 
 
-def _parse_functions(token: sqlparse.sql.Identifier, acc=""):
+def _parse_ts(token: sqlparse.sql.Identifier, ts: tuple[type, ...], acc=""):
     """
-    Recursively get FUNCTION(...params) and OVER (...)
+    Recursively get [THING](...params) and OVER (...)
     """
-    f = token[0]
-
-    if not isinstance(f, sqlparse.sql.Function):
-        return acc.rstrip()
-
-    inner_token = token.tokens.pop()
-    if isinstance(inner_token, sqlparse.sql.Identifier):
-        inner_tokens = inner_token
-        return _parse_functions(inner_tokens, f"{acc}{f} ")
-
-    return acc.rstrip()
-
-
-def _parse_op_with_window_function(token: sqlparse.sql.Identifier, acc=""):
     op = token[0]
-
     inner_token = token.tokens.pop()
     if isinstance(inner_token, sqlparse.sql.Identifier):
         inner_tokens = inner_token
-        return _parse_op_with_window_function(inner_tokens, f"{acc}{op} ")
+        return _parse_ts(inner_tokens, ts, acc=f"{acc}{op} ")
 
-    if not isinstance(op, sqlparse.sql.Operation):
-        return acc.rstrip()
-    return acc.rstrip()
+    if not isinstance(op, ts):
+        return acc.rstrip(" ")
+    return str(op)
 
 
 def _parse_identifier(token: sqlparse.sql.Identifier, is_first: bool) -> str:
-    alias = cast(str, token.get_name())
-    table = token._get_first_name()
-    real_name = token.get_real_name()
+    table, real_name, alias = (
+        token._get_first_name(),
+        token.get_real_name(),
+        cast(str, token.get_name()),
+    )
 
     tokens: Identifiers = token.tokens
-    # Functions + window functions
-    if isinstance(tokens[0], sqlparse.sql.Function):
-        func = _parse_functions(token)
-        return create_select(is_first, func, alias)
-    # Operations + window functions
-    if isinstance(tokens[0], sqlparse.sql.Operation):
-        op = _parse_op_with_window_function(token)
-        return create_select(is_first, f"{op}", alias)
-    # Support subqueries
-    if isinstance(tokens[0], sqlparse.sql.Parenthesis):
-        parens = tokens[0]
-        alias = cast(str, tokens.pop().get_name())
-        return create_select(is_first, str(parens), alias)
-    select = table if table == real_name else f"{table}.{real_name}"
-    return create_select(is_first, select, alias)
+    match type(tokens[0]):
+        case sqlparse.sql.Case:
+            return create_select(is_first, str(tokens[0]), alias)
+        case sqlparse.sql.Function | sqlparse.sql.Operation:
+            thing = _parse_ts(token, (sqlparse.sql.Function, sqlparse.sql.Operation))
+            return create_select(is_first, thing, alias)
+            # Support subqueries
+        case sqlparse.sql.Parenthesis:
+            parens = tokens[0]
+            alias = cast(str, tokens.pop().get_name())
+            return create_select(is_first, str(parens), alias)
+        case _:
+            select = table if table == real_name else f"{table}.{real_name}"
+            return create_select(is_first, select, alias)
 
 
 def _convert(statements: Iterable[sqlparse.sql.Statement]):
     inside_select = True
     is_first = True
-    enumerated_tokens = enumerate(
-        chain.from_iterable(map(attrgetter("tokens"), statements))
-    )
-    for i, token in enumerated_tokens:
-        if isinstance(token, sqlparse.sql.Identifier) and inside_select:
-            yield _parse_identifier(token, is_first) + "\n"
-            continue
-        if isinstance(token, sqlparse.sql.IdentifierList) and inside_select:
-            identifiers: Identifiers = list(token.get_identifiers())
+    tokens = chain.from_iterable(map(attrgetter("tokens"), statements))
+    for token in tokens:
+        match type(token):
+            # Only one identifier
+            case sqlparse.sql.Identifier if inside_select:
+                yield _parse_identifier(token, is_first) + "\n"
+                continue
+            # Many identifiers
+            case sqlparse.sql.IdentifierList if inside_select:
+                identifiers: Identifiers = list(token.get_identifiers())
 
-            for j, id in enumerate(identifiers, 1):
-                stmt = _parse_identifier(id, is_first)
-                if is_first:
-                    is_first = False
-                # yield stmt with a comma for all but the last identifier
-                # that is, as long as the next token is not the FROM keyword
-                yield stmt + ("," if j != len(identifiers) else "") + "\n"
-            continue
-        elif is_from_token(token):
-            inside_select = False
-        elif is_where_token(token):
-            # This is neccesary or the content package fails @FILTER@
-            token.insert_after(
-                i, sqlparse.sql.Token(sqlparse.tokens.Comparison, "AND @FILTER@\n")
-            )
+                for j, id in enumerate(identifiers, 1):
+                    # Fixes issue with columns having the same names as functions
+                    if not isinstance(id, sqlparse.sql.Identifier):
+                        id = sqlparse.sql.Identifier(
+                            [sqlparse.sql.Token(sqlparse.tokens.Name, id.value)]
+                        )
+                    stmt = _parse_identifier(id, is_first)
+                    if is_first:
+                        is_first = False
+                    # yield stmt with a comma for all but the last identifier
+                    # that is, as long as the next token is not the FROM keyword
+                    yield stmt + ("," if j != len(identifiers) else "") + "\n"
+                continue
+            case _ if is_from_token(token):
+                inside_select = False
+            case _ if is_where_token(token):
+                # This is neccesary or the content package fails @FILTER@
+                token.tokens.append(
+                    sqlparse.sql.Token(sqlparse.tokens.Comparison, "AND @FILTER@\n")
+                )
         yield str(token)
 
 
