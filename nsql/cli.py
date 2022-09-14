@@ -12,9 +12,12 @@ from nsql.utils import (
     get_config_path,
     get_env_creds,
     get_envs,
+    open_task,
     save_envs,
+    track,
+    update_credentials,
 )
-from nsql.xog import Databases, Format, QueryID, Writer, XOG
+from nsql.xog import Databases, Format, QueryID, Writer, XOG, parse_xml
 
 
 app = typer.Typer(name="nsql", pretty_exceptions_show_locals=False)
@@ -23,8 +26,63 @@ runner = typer.Typer()
 
 creds = typer.Typer()
 
+creds_update = typer.Typer()
+
+creds.add_typer(creds_update, name="update", help="Updates credentials")
 app.add_typer(runner, name="run", help="Runs NSQL")
 app.add_typer(creds, name="credentials", help="Manages credentials")
+
+
+RequiredAutoCompleteENV = typer.Option(
+    ...,
+    "--env",
+    "-e",
+    help="Environment name.",
+    autocompletion=complete_env,
+)
+
+
+@app.command(short_help="Run a XOG")
+def xog(
+    input_file: Path,
+    env: str = typer.Option(
+        ...,
+        "--env",
+        "-e",
+        help="Environment name.",
+        autocompletion=complete_env,
+    ),
+    output: typer.FileTextWrite = typer.Option(
+        "out.xml",
+        "--output",
+        "-o",
+        help="Output file.",
+    ),
+    timeout: float = typer.Option(
+        120 * 60,
+        "--timeout",
+        "-t",
+        help="XOG client timeout. Pass 0 to disable it.",
+    ),
+):
+    env_url, username, passwd = get_env_creds(env)
+    xog = XOG(env_url, username, passwd, timeout=timeout)
+    console.log(f"Environment: {env_url}")
+    console.log(f"Input file:  {input_file}")
+    console.log(f"Output file: {output.name}")
+    with Progress(
+        SpinnerColumn(),
+        TextColumn("[progress.description]{task.description}"),
+        console=console,
+        transient=True,
+    ) as p:
+        with p.open(input_file, "r", description="Reading XOG...") as f:
+            xml = parse_xml(f)
+        with track(p, xog, "Running XOG...") as client:
+            resp = client.send(xml)
+        with open_task(p, "Writing output file..."):
+            written = Writer(output, Format.json, console).write_xml(resp)
+    console.log(f"Wrote {written} bytes")
 
 
 @app.command(
@@ -45,6 +103,18 @@ def transpile(
     """
     with sql.open("r") as f:
         output.write(parser.sql_to_nsql(f))
+
+
+def creds_update_factory():
+    for cred in ["url", "username", "password"]:
+
+        @creds_update.command(name=cred, help=f"Updates {cred} on an ENV")
+        def _(value: str, env: str = RequiredAutoCompleteENV):
+            update_credentials(env, **{cred: value})
+            console.log(f"Updated env {env} 🚀")
+
+
+creds_update_factory()
 
 
 @creds.command()
@@ -95,27 +165,23 @@ def run_with_id(
     xog: str = typer.Option(None, hidden=True),
 ):
     """
-    Runs a query on the specified ENV and writes it to STDOUT or OUTPUT.
+    Run a query on the specified ENV and write it to STDOUT or OUTPUT.
     """
-    if format is Format.table and not output.isatty():
-        raise typer.BadParameter(
-            f"Format: {Format.table} is not compatible if output is not STDOUT\nOutput: {output.name}."
-        )
     env_url, username, passwd = get_env_creds(env)
     xog_c = cast(XOG, xog)
+    xog_c = xog_c or XOG(env_url, username, passwd)
 
     with Progress(
         SpinnerColumn(),
         TextColumn("[progress.description]{task.description}"),
         console=console,
         transient=True,
-    ) as p, (xog_c or XOG(env_url, username, passwd)) as client:
-        p.add_task(description="Running query...")
-        query_id = QueryID(query_id)
-
-        result = client.run_query(query_id)[:limit]
-        p.add_task(description=f"Writing {len(result)} lines to {output.name}...")
-        Writer(output, format, console).write(query_id, result)
+    ) as p:
+        with track(p, xog_c, "Running query...") as client:
+            query_id = QueryID(query_id)
+            result = client.run_query(query_id)[:limit]
+        with open_task(p, f"Writing {len(result)} lines to {output.name}..."):
+            Writer(output, format, console).write(query_id, result)
 
 
 @runner.command()
@@ -132,7 +198,10 @@ def file(
         help="Database ID in which the query is supposed to run on.",
     ),
     to_nsql: bool = typer.Option(
-        False, "--to-nsql", "-t", help="Transpiles SQL to NSQL before running it."
+        False,
+        "--to-nsql",
+        "-t",
+        help="Transpile to NSQL before running it. True if FILENAME ext is .sql",
     ),
     env: Optional[str] = typer.Option(
         None,
@@ -160,7 +229,7 @@ def file(
     ),
 ):
     """
-    XOGs and runs a file to ENV and writes it to STDOUT or OUTPUT.
+    XOG and run a file on ENV and write it to STDOUT or OUTPUT.
     """
 
     env_url, username, passwd = get_env_creds(env)
@@ -170,18 +239,20 @@ def file(
     if nsql_path.isatty():
         console.print("Copy & paste your NSQL")
 
-    nsql = parser.sql_to_nsql(nsql_path) if to_nsql else nsql_path.read()
-
+    xog = XOG(env_url, username, passwd)
     with Progress(
         SpinnerColumn(),
         TextColumn("[progress.description]{task.description}"),
         transient=True,
         console=console,
-    ) as p, XOG(env_url, username, passwd) as client:
-        p.add_task(description="Uploading query...")
-        query_id = client.upload_query(nsql, db)
+    ) as p, xog:
+        with open_task(p, description="Reading file..."):
+            nsql = parser.sql_to_nsql(nsql_path) if to_nsql else nsql_path.read()
+
+        with open_task(p, description="Uploading query..."):
+            query_id = xog.upload_query(nsql, db)
         p.stop()
-        run_with_id(query_id, env, output, limit, format, xog=cast(str, client))
+        run_with_id(query_id, env, output, limit, format, xog=cast(str, xog))
     console.log("Done!")
 
 
