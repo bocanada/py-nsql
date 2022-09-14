@@ -1,7 +1,6 @@
 from collections.abc import Iterable
-from typing import TypeGuard, cast
+from typing import TextIO, TypeGuard, cast
 import sqlparse
-from io import TextIOWrapper
 from itertools import chain
 from operator import attrgetter
 
@@ -99,7 +98,7 @@ def _convert(statements: Iterable[sqlparse.sql.Statement]):
         yield str(token)
 
 
-def sql_to_nsql(file: TextIOWrapper):
+def sql_to_nsql(file: TextIO):
     """
     Converts a SQL file/str to a NSQL str.
     Constraints:

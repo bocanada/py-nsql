@@ -1,4 +1,4 @@
-from nsql.cli import app
+from cautils.cli import app
 
 if __name__ == "__main__":
     app()

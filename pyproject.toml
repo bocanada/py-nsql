@@ -1,6 +1,6 @@
 [tool.poetry]
-name = "nsql"
-version = "0.1.0"
+name = "cautils"
+version = "0.2.0"
 description = ""
 authors = ["Mauro M. <24578415+Bocanada@users.noreply.github.com>"]
 readme = "README.md"
@@ -20,7 +20,7 @@ mypy = "^0.971"
 lxml-stubs = "^0.4.0"
 
 [tool.poetry.scripts]
-nsql = "nsql.cli:app"
+cautils = "cautils.cli:app"
 
 [build-system]
 requires = ["poetry-core>=1.0.0"]

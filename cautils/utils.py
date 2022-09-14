@@ -1,48 +1,18 @@
 from __future__ import annotations
-from contextlib import contextmanager
-from dataclasses import dataclass, field
 import json
 from pathlib import Path
-from typing import ContextManager, Generic, Iterable, Optional, TypeAlias, TypeVar
+from typing import Iterable, Optional, TypeAlias
 
 from rich.prompt import Confirm, Prompt
-from rich.progress import Progress, TaskID
 import typer
 
-from nsql import APP_NAME, console
+from cautils import APP_NAME, console
 
 
 Env: TypeAlias = dict[str, str]
 Envs: TypeAlias = dict[str, dict[str, str]]
 
 Creds: TypeAlias = tuple[str, str, str]
-
-
-T = TypeVar("T")
-
-
-@dataclass
-class track(Generic[T]):
-    p: Progress
-    ctx_mngr: ContextManager[T]
-    description: str
-
-    _task_id: TaskID = field(init=False)
-
-    def __enter__(self) -> T:
-        self._task_id = self.p.add_task(self.description)
-        return self.ctx_mngr.__enter__()
-
-    def __exit__(self, *args, **kwargs):
-        self.p.update(self._task_id, completed=100)
-        return self.ctx_mngr.__exit__(*args, **kwargs)
-
-
-@contextmanager
-def open_task(p: Progress, description: str):
-    task_id = p.add_task(description)
-    yield
-    p.update(task_id, completed=100)
 
 
 def get_config_path() -> Path:
