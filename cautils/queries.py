@@ -1,111 +1,104 @@
 from pathlib import Path
 from tempfile import NamedTemporaryFile
 from typing import Optional, cast
-from rich.live import Live
-from rich.pager import SystemPager
 
 import typer
 
 from cautils import console, parser
-from cautils.utils import (
-    complete_env,
-    get_env_creds,
-)
+from cautils.utils import ask, complete_env, get_env_creds
 from cautils.xog import ContentPackageException, Databases, Format, QueryID, Writer, XOG
-from rich.prompt import Confirm
 
 queries = typer.Typer()
 
-runner = typer.Typer()
+runner = typer.Typer(no_args_is_help=True)
 queries.add_typer(runner, name="run")
 
-RequiredAutoCompleteENV = typer.Option(
-    ...,
+NotRequiredAutoENV = typer.Option(
+    None,
     "--env",
     "-e",
     help="Environment name.",
     autocompletion=complete_env,
 )
 
+DbOption = typer.Option(
+    Databases.niku,
+    "--db",
+    "-d",
+    show_choices=True,
+    case_sensitive=False,
+    help="Database ID.",
+)
+
 
 @queries.command()
 def edit(
     query_id: str,
-    env: str = RequiredAutoCompleteENV,
-    db: Databases = typer.Option(
-        Databases.niku,
-        "--db",
-        "-d",
-        show_choices=True,
-        case_sensitive=False,
-        help="Database ID.",
-    ),
-    output: typer.FileTextWrite = typer.Option(
-        "-",
-        "--output",
-        "-o",
-        help="Output file.",
-    ),
-    loop: bool = typer.Option(
-        True, help="After an exception is thrown, continue running."
-    ),
+    env: str = NotRequiredAutoENV,
+    db: Databases = DbOption,
+    once: bool = typer.Option(True, help="Only run once."),
     format: Format = typer.Option(
         Format.table, "--format", "-f", case_sensitive=False, show_choices=True
     ),
     run: bool = typer.Option(True, help="Run the query."),
     limit: int = typer.Option(None, "--limit", "-n", help="Limit the number of rows."),
+    output: typer.FileTextWrite = typer.Option("-", hidden=True),
+    timeout: int = typer.Option(35),
 ):
     """
-    Edit a query on the environment.
+    Edit a query interactively on the environment.
+    It will run until you make no changes on the NSQL.
     """
     env_url, username, passwd = get_env_creds(env)
     query_id = QueryID(query_id)
 
-    xog = XOG(env_url, username, passwd)
+    xog = XOG(env_url, username, passwd, timeout)
     with console.status("Getting query..."):
         nsql = xog.query_get(query_id, db)
 
+    w = Writer(output, format, console)
+
+    last_qry = ""
+
     assert nsql.text is not None, f"Couldn't get query with id {query_id}"
+
     with NamedTemporaryFile("w+", suffix=".sql", prefix=query_id) as f:
         f.write(nsql.text)
         # If we don't do this, the file is empty
         f.flush()
-        # Stop the progress display so it doesn't mess with vim
         while True:
             if (code := typer.launch(f.name, wait=True)) != 0:
                 raise Exception(f"Status code: {code}")
             # Go back to the start of the file, and dump its contents
             f.seek(0)
-            with console.status("Uploading query..."):
-                try:
-                    xog.upload_query(f.read(), db, query_id)
-                except ContentPackageException as e:
-                    console.log(str(e), style="red")
-                    ask()
-                    continue
+            if last_qry == (last_qry := f.read()):
+                console.log("No changes were made. Exiting...")
+                raise typer.Exit(0)
+            try:
+                with console.status("Uploading query..."):
+                    xog.upload_query(last_qry, db, query_id)
+            except ContentPackageException:
+                console.print_exception()
+                ask()
+                continue
             if not run:
-                console.log(f"Uploaded query {query_id}")
-                raise typer.Exit(0)
-            run_and_write(xog, query_id, output, format, limit)
-            ask()
-            if not loop:
-                raise typer.Exit(0)
+                console.log(f"Uploaded query {query_id}. Exiting..")
+                break
 
+            result = xog.run_query(query_id)[:limit]
+            with console.pager(styles=True, links=True):
+                w.write(query_id, result)
 
-def ask():
-    """
-    Asks if the user wants to continue.
-    If not, raise typer.Exit
-    """
-    if not Confirm.ask("Continue?", console=console, default=True):
-        console.log("Bye!")
-        raise typer.Exit(0)
+            if once:
+                break
+
+    console.log(f"Uploaded query {query_id}. Exiting..")
 
 
 @runner.command(name="id")
 def run_with_id(
     query_id: str = typer.Argument(..., help="NSQL Query ID"),
-    env: Optional[str] = RequiredAutoCompleteENV,
+    env: Optional[str] = NotRequiredAutoENV,
     output: typer.FileTextWrite = typer.Option(
         "-",
         "--output",
@@ -137,46 +130,19 @@ def run_with_id(
         run_and_write(xog_c, query_id, output, format, limit)
 
 
-def run_and_write(
-    xog: XOG,
-    query_id: QueryID,
-    output: typer.FileTextWrite,
-    format: Format,
-    limit: Optional[int],
-):
-    query_id = QueryID(query_id)
-    with console.status("Running query..."):
-        result = xog.run_query(query_id)[:limit]
-    with console.status(f"Writing {len(result)} lines to {output.name}...\n"):
-        Writer(output, format, console).write(query_id, result)
-
-
 @runner.command()
 def file(
     nsql_path: typer.FileText = typer.Argument(
         ..., help="SQL/NSQL code file path.", exists=True, readable=True
     ),
-    db: Databases = typer.Option(
-        Databases.niku,
-        "--db",
-        "-d",
-        show_choices=True,
-        case_sensitive=False,
-        help="Database ID in which the query is supposed to run on.",
-    ),
+    db: Databases = DbOption,
     to_nsql: bool = typer.Option(
         False,
         "--to-nsql",
         "-t",
         help="Transpile to NSQL before running it. True if FILENAME ext is .sql",
     ),
-    env: Optional[str] = typer.Option(
-        None,
-        "--env",
-        "-e",
-        help="Environment name.",
-        autocompletion=complete_env,
-    ),
+    env: Optional[str] = NotRequiredAutoENV,
     output: typer.FileTextWrite = typer.Option(
         "-",
         "--output",
@@ -234,3 +200,19 @@ def transpile(
     """
     with console.status("Transpiling..."), sql.open("r") as f:
         output.write(parser.sql_to_nsql(f))
+
+
+def run_and_write(
+    xog: XOG,
+    query_id: QueryID,
+    output: typer.FileTextWrite,
+    format: Format,
+    limit: Optional[int],
+):
+    query_id = QueryID(query_id)
+
+    with console.status("Running query..."):
+        result = xog.run_query(query_id)[:limit]
+
+    with console.status(f"Writing {len(result)} lines to {output.name}...\n"):
+        Writer(output, format, console).write(query_id, result)

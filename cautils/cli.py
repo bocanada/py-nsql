@@ -1,95 +1,67 @@
 from pathlib import Path
-
-from rich.prompt import Confirm
+from typing import Optional
 from rich.columns import Columns
+
 from rich.panel import Panel
+from rich.rule import Rule
 import typer
 
 from cautils import console
 from cautils.utils import (
     complete_env,
-    create_env,
-    get_config_path,
     get_env_creds,
-    get_envs,
-    save_envs,
-    update_credentials,
 )
+from cautils.credentials import app as creds
 from cautils.queries import queries
-from cautils.xog import XOG, Format, Writer, Xml
+from cautils.xog import XOG, Xml
 from cautils import APP_NAME
 
 
-app = typer.Typer(name=APP_NAME, pretty_exceptions_show_locals=False)
-
-creds = typer.Typer()
-
-creds_update = typer.Typer()
-
-app.add_typer(queries, name="query", help="N/SQL utils")
-app.add_typer(creds, name="credentials", help="Manages credentials")
-creds.add_typer(creds_update, name="update", help="Updates credentials")
-
-
-RequiredAutoCompleteENV = typer.Option(
-    ...,
-    "--env",
-    "-e",
-    help="Environment name.",
-    autocompletion=complete_env,
+app = typer.Typer(
+    name=APP_NAME, pretty_exceptions_show_locals=False, no_args_is_help=True
 )
 
 
-def creds_update_factory():
-    for cred in ["url", "username", "password"]:
-
-        @creds_update.command(name=cred, help=f"Updates {cred} on an ENV")
-        def _(value: str, env: str = RequiredAutoCompleteENV):
-            update_credentials(env, **{cred: value})
-            console.log(f"Updated env {env} 🚀")
+app.add_typer(queries, name="query", help="N/SQL utils")
+app.add_typer(creds, name="credentials", help="Manages credentials")
 
 
-creds_update_factory()
+def print_header(env_url: str, input_file: str, output: str):
+    panel = Columns(
+        [
+            Panel.fit(env_url, title="URL"),
+            Panel.fit(Path(input_file).absolute().as_uri(), title="Input file"),
+            Panel.fit(Path(output).absolute().as_uri(), title="Output file"),
+        ],
+        expand=True,
+        align="center",
+    )
+    console.print(Rule("XOG"))
+    console.print(panel, style="green")
 
 
-@creds.command()
-def new(name: str, env_url: str, username: str, password: str):
-    """
-    Adds a new environment to the application's config file.
-    """
-    path = get_config_path()
-    envs = get_envs(path)
-    if name in envs:
-        if not Confirm.ask(
-            "This will replace an existing env. Are you sure you want to continue?",
-            default=True,
-        ):
-            raise typer.Abort()
-    create_env(envs, name, env_url, username, password)
-    save_envs(envs, path)
-    console.log(f"Saved env {name} -> {env_url}. 🚀")
-
-
-@creds.command()
-def list():
-    """
-    Lists all environments on the configuration file.
-    """
-
-    path = get_config_path()
-    envs = get_envs(path)
-    console.log(f"Showing {len(envs)} saved envs:")
+def print_xml_preview(
+    xml: Xml, limit: Optional[int] = None, subtitle: Optional[str] = None
+):
+    if not limit:
+        return
     console.print(
-        Columns([Panel(v["url"], title=env, expand=True) for env, v in envs.items()]),
-        justify="center",
+        Panel.fit(
+            xml.syntax(limit),
+            title="Input preview",
+            subtitle=subtitle,
+            style="green",
+        )
     )
 
 
 @app.command(short_help="Run a XOG")
 def xog(
-    input_file: Path,
+    input_file: typer.FileText = typer.Argument(
+        ..., readable=True, dir_okay=False, exists=True
+    ),
     env: str = typer.Option(
-        ...,
+        None,
         "--env",
         "-e",
         help="Environment name.",
@@ -105,26 +77,33 @@ def xog(
         120 * 60,
         "--timeout",
         "-t",
-        help="XOG client timeout. Pass 0 to disable it.",
+        help="XOG client timeout. 0 to disable it.",
+    ),
+    preview_lines: Optional[int] = typer.Option(
+        30,
+        "--preview-lines",
+        "-n",
+        help="Preview n lines of the input file.",
     ),
 ):
     env_url, username, passwd = get_env_creds(env)
-    xog = XOG(env_url, username, passwd, timeout=timeout)
-    console.log(f"Environment: {env_url}")
-    console.log(f"Input file:  {Path(input_file).absolute().as_uri()}")
-    console.log(f"Output file: {Path(output.name).absolute().as_uri()}")
+    print_header(env_url, input_file.name, output.name)
 
-    with console.status("Reading XOG..."), input_file.open("r") as f:
+    with console.status("Reading XOG..."), input_file as f:
         xml = Xml.read(f)
+
+    print_xml_preview(xml, preview_lines, input_file.name)
+
     action = (
-        header.get("action", "read")
-        if (header := xml.find("Header")) is not None
-        else "read"
+        header[0].get("action", "?") if (header := xml.xpath("//Header")) else "read"
     )
-    with console.status(f"Running {action} XOG..."), xog as client:
+
+    with console.status(f"Running {action} XOG..."), XOG(
+        env_url, username, passwd, timeout=timeout
+    ) as client:
         resp = client.send(xml)
     with console.status("Writing output file..."):
-        written = Writer(output, Format.json, console).write_xml(resp)
+        written = resp.write(output)
     console.log(f"Wrote {written} bytes")
 
 

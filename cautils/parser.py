@@ -1,8 +1,9 @@
 from collections.abc import Iterable
-from typing import TextIO, TypeGuard, cast
-import sqlparse
 from itertools import chain
 from operator import attrgetter
+from typing import TextIO, TypeGuard, cast
+
+import sqlparse
 
 
 Identifiers = list[sqlparse.sql.Identifier]

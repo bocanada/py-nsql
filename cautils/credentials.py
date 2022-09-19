@@ -27,7 +27,7 @@ app = typer.Typer()
 
 @app.command(help="Updates credentials")
 def update(
-    cred: Credentials = typer.Argument(..., show_choices=True),
+    cred: Credentials = typer.Argument(..., show_choices=True, case_sensitive=False),
     value: str = typer.Argument(...),
     env: str = typer.Option(
         ...,

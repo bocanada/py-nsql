@@ -100,3 +100,13 @@ def complete_env() -> Iterable[str]:
     config_path = get_config_path()
     envs = get_envs(config_path)
     return envs.keys()
+
+
+def ask():
+    """
+    Asks if the user wants to continue.
+    If not, raise typer.Exit
+    """
+    if not Confirm.ask("Continue?", console=console, default=True):
+        console.log("Bye!")
+        raise typer.Abort()

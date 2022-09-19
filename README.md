@@ -1,18 +1,18 @@
-# py-nsql
+# cautils
 
-py-nsql is a python library that allows you to run a n/sql query on a Clarity PPM env from the command line.
+cautils is a python library that allows you to run a n/sql query on a Clarity PPM env from the command line.
 
 # Examples
 
 - Creating a new environment
 ```console
-foo@bar:~$ nsql credentials new env-name http://env.url username password
+foo@bar:~$ cautils credentials new env-name http://env.url username password
 [11:02:41] Saved env env-name -> http://env.url. 🚀
 ```
 
 - Running a query from a file
 ```console
-foo@bar:~$ nsql run file ./files/dwh_audit.nsql --env ppm-dev --db Datawarehouse
+foo@bar:~$ cautils query run file ./files/dwh_audit.nsql --env ppm-dev --db Datawarehouse
                                                              query.runner
 ┏━━━━━━━━━┳━━━━━━━━━━━━━━━━━━━━━━━━━━┳━━━━━━━━━━━━━━━━━━━━━┳━━━━━━━━━━━━━━━━━━━━━┳━━━━━━━━━━━━━━━━━━━━━┳━━━━━━━━━━━━━━━┳━━━━━━━━━━━━━┓
 ┃ row_num ┃ table_name               ┃ dw_updated_date     ┃ dw_load_start_date  ┃ dw_load_end_date    ┃ load_duration ┃ table_count ┃
@@ -26,7 +26,7 @@ foo@bar:~$ nsql run file ./files/dwh_audit.nsql --env ppm-dev --db Datawarehouse
 
 - Running an existing query on Clarity PPM
 ```console
-foo@bar:~$nsql run id cop.admDWHAudit -e ppm-dev -n 2
+foo@bar:~$ cautils query run id cop.admDWHAudit -e ppm-dev -n 2
                                                               cop.admDWHAudit
 ┏━━━━━━━━━┳━━━━━━━━━━━━━━━━━━━━━━━━━━┳━━━━━━━━━━━━━━━━━━━━━┳━━━━━━━━━━━━━━━━━━━━━┳━━━━━━━━━━━━━━━━━━━━━┳━━━━━━━━━━━━━━━┳━━━━━━━━━━━━━┓
 ┃ row_num ┃ table_name               ┃ dw_updated_date     ┃ dw_load_start_date  ┃ dw_load_end_date    ┃ load_duration ┃ table_count ┃
@@ -40,7 +40,7 @@ foo@bar:~$nsql run id cop.admDWHAudit -e ppm-dev -n 2
 
 - Getting the result on a different format
 ```console
-foo@bar:~$ nsql run file ./files/dwh_audit.nsql -e ppm-dev -f json --limit 2
+foo@bar:~$ cautils run file ./files/dwh_audit.nsql -e ppm-dev -f json --limit 2
 ```
 Yields the result:
 ```json
@@ -70,5 +70,5 @@ Yields the result:
 
 - Output the result to a file instead of stdout
 ```console
-foo@bar:~$ nsql run id cop.dwh_audit -e ppm-dev -f csv -o dwh_audit.csv
+foo@bar:~$ cautils query run id cop.dwh_audit -e ppm-dev -f csv -o dwh_audit.csv
 ```
