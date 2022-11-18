@@ -1,24 +1,23 @@
 from pathlib import Path
 from typing import Optional
-from rich.columns import Columns
 
+import typer
+from rich.columns import Columns
 from rich.panel import Panel
 from rich.rule import Rule
-import typer
 
-from cautils import console
-from cautils.utils import (
-    complete_env,
-    get_env_creds,
-)
+from cautils import APP_NAME, console
+from cautils import opts
 from cautils.credentials import app as creds
 from cautils.queries import queries
-from cautils.xog import XOG, Xml
-from cautils import APP_NAME
-
+from cautils.xog import XOG, Xml, XogException
+from cautils.utils import get_env_creds
 
 app = typer.Typer(
-    name=APP_NAME, pretty_exceptions_show_locals=False, no_args_is_help=True
+    name=APP_NAME,
+    pretty_exceptions_show_locals=False,
+    no_args_is_help=True,
+    add_completion=True,
 )
 
 
@@ -26,17 +25,17 @@ app.add_typer(queries, name="query", help="N/SQL utils")
 app.add_typer(creds, name="credentials", help="Manages credentials")
 
 
-def print_header(env_url: str, input_file: str, output: str):
+def print_header(env_url: str, input_file: str, output_file: str, title: str = "XOG"):
     panel = Columns(
         [
             Panel.fit(env_url, title="URL"),
             Panel.fit(Path(input_file).absolute().as_uri(), title="Input file"),
-            Panel.fit(Path(output).absolute().as_uri(), title="Output file"),
+            Panel.fit(Path(output_file).absolute().as_uri(), title="Output file"),
         ],
         expand=True,
         align="center",
     )
-    console.print(Rule("XOG"))
+    console.print(Rule(title))
     console.print(panel, style="green")
 
 
@@ -60,39 +59,24 @@ def xog(
     input_file: typer.FileText = typer.Argument(
         ..., readable=True, dir_okay=False, exists=True
     ),
-    env: str = typer.Option(
-        None,
-        "--env",
-        "-e",
-        help="Environment name.",
-        autocompletion=complete_env,
-    ),
-    output: typer.FileTextWrite = typer.Option(
-        "out.xml",
-        "--output",
-        "-o",
-        help="Output file.",
-    ),
-    timeout: float = typer.Option(
-        120 * 60,
-        "--timeout",
-        "-t",
-        help="XOG client timeout. 0 to disable it.",
-    ),
+    env: str = opts.EnvOpt,
+    output: typer.FileTextWrite = opts.OutputOpt,
+    timeout: float = opts.TimeoutOpt,
     preview_lines: Optional[int] = typer.Option(
         30,
         "--preview-lines",
         "-n",
         help="Preview n lines of the input file.",
     ),
-):
+) -> None:
     env_url, username, passwd = get_env_creds(env)
     print_header(env_url, input_file.name, output.name)
 
     with console.status("Reading XOG..."), input_file as f:
         xml = Xml.read(f)
 
-    print_xml_preview(xml, preview_lines, input_file.name)
+    if preview_lines:
+        print_xml_preview(xml, preview_lines, input_file.name)
 
     action = (
         header[0].get("action", "?") if (header := xml.xpath("//Header")) else "read"
@@ -101,9 +85,15 @@ def xog(
     with console.status(f"Running {action} XOG..."), XOG(
         env_url, username, passwd, timeout=timeout
     ) as client:
-        resp = client.send(xml)
+        try:
+            resp = client.send(xml)
+        except XogException as e:
+            # Catch the exception so we can save it to the output file.
+            console.print_exception()
+            resp = e.raw
+
     with console.status("Writing output file..."):
-        written = resp.write(output)
+        written = resp.write_to(output)
     console.log(f"Wrote {written} bytes")
 
 

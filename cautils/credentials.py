@@ -1,19 +1,14 @@
 from enum import Enum
 
-from rich.panel import Panel
-from rich.columns import Columns
-from rich.prompt import Confirm
 import typer
+from rich.align import Align
+from rich.columns import Columns
+from rich.panel import Panel
+from rich.prompt import Confirm
 
 from cautils import console
-from cautils.utils import (
-    complete_env,
-    create_env,
-    get_config_path,
-    get_envs,
-    save_envs,
-    update_credentials,
-)
+from cautils.utils import (complete_env, create_env, get_config_path, get_envs,
+                           save_envs, update_credentials)
 
 
 class Credentials(str, Enum):
@@ -22,7 +17,7 @@ class Credentials(str, Enum):
     email = "email"
 
 
-app = typer.Typer()
+app = typer.Typer(no_args_is_help=True)
 
 
 @app.command(help="Updates credentials")
@@ -38,7 +33,7 @@ def update(
         autocompletion=complete_env,
     ),
 ):
-    update_credentials(env, **{cred: value})
+    update_credentials(env, **{str(cred): value})
     console.log(f"Updated env {env} 🚀")
 
 
@@ -65,14 +60,20 @@ def list_envs():
     """
     Lists all environments on the configuration file.
     """
-
     path = get_config_path()
     envs = get_envs(path)
-    console.log(f"Showing {len(envs)} saved envs:")
+
     console.print(
         Columns(
             [
-                Panel(v["url"], style="green", title=env, expand=True)
+                Panel(
+                    Align(v["url"], "center"),
+                    subtitle=v["username"],
+                    style="green",
+                    highlight=True,
+                    title=env,
+                    expand=True,
+                )
                 for env, v in envs.items()
             ],
             expand=True,

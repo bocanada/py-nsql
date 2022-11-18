@@ -1,13 +1,11 @@
-from __future__ import annotations
 import json
 from pathlib import Path
 from typing import Iterable, Optional, TypeAlias
 
-from rich.prompt import Confirm, Prompt
 import typer
+from rich.prompt import Confirm, Prompt
 
 from cautils import APP_NAME, console
-
 
 Env: TypeAlias = dict[str, str]
 Envs: TypeAlias = dict[str, dict[str, str]]
@@ -47,6 +45,10 @@ def ask_for_creds() -> Creds:
         Prompt.ask(prompt, console=console)
         for prompt in ["Environment URL", "Username"]
     ], Prompt.ask("Password", password=True, console=console)
+
+    if any(v == "" for v in [env_url, username, passwd]):
+        raise ValueError("Expected non-empty values.")
+
     return env_url, username, passwd
 
 
@@ -108,5 +110,5 @@ def ask():
     If not, raise typer.Exit
     """
     if not Confirm.ask("Continue?", console=console, default=True):
-        console.log("Bye!")
+        console.log("Ok! Exiting...")
         raise typer.Abort()

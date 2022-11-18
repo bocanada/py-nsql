@@ -4,47 +4,35 @@ from typing import Optional, cast
 
 import typer
 
-from cautils import console, parser
-from cautils.utils import ask, complete_env, get_env_creds
-from cautils.xog import ContentPackageException, Databases, Format, QueryID, Writer, XOG
+from cautils import console, opts, parser
+from cautils.utils import ask, get_env_creds
+from cautils.xog import (
+    QUERY_CODE,
+    XOG,
+    ContentPackageException,
+    Database,
+    Format,
+    QueryID,
+    Writer,
+)
 
-queries = typer.Typer()
+queries = typer.Typer(no_args_is_help=True)
 
 runner = typer.Typer(no_args_is_help=True)
-queries.add_typer(runner, name="run")
-
-NotRequiredAutoENV = typer.Option(
-    None,
-    "--env",
-    "-e",
-    help="Environment name.",
-    autocompletion=complete_env,
-)
-
-DbOption = typer.Option(
-    Databases.niku,
-    "--db",
-    "-d",
-    show_choices=True,
-    case_sensitive=False,
-    help="Database ID.",
-)
+queries.add_typer(runner, name="run", no_args_is_help=True)
 
 
 @queries.command()
 def edit(
     query_id: str,
-    env: str = NotRequiredAutoENV,
-    db: Databases = DbOption,
-    once: bool = typer.Option(True, help="Only run once."),
-    format: Format = typer.Option(
-        Format.table, "--format", "-f", case_sensitive=False, show_choices=True
-    ),
+    env: str = opts.EnvOpt,
+    db: Database = opts.DbOpt,
+    format: Format = opts.FormatOpt,
     run: bool = typer.Option(True, help="Run the query."),
-    limit: int = typer.Option(None, "--limit", "-n", help="Limit the number of rows."),
+    limit: int = opts.LimitOpt,
+    timeout: int = opts.TimeoutOpt,
     output: typer.FileTextWrite = typer.Option("-", hidden=True),
-    timeout: int = typer.Option(35),
-):
+) -> None:
     """
     Edit a query interactively on the environment.
     It will run until you make no changes on the NSQL.
@@ -64,7 +52,7 @@ def edit(
 
     with NamedTemporaryFile("w+", suffix=".sql", prefix=query_id) as f:
         f.write(nsql.text)
-        # If we don't do this, the file is empty
+        # If we don't do this, the file will be empty
         f.flush()
         while True:
             if (code := typer.launch(f.name, wait=True)) != 0:
@@ -81,16 +69,13 @@ def edit(
                 console.print_exception()
                 ask()
                 continue
+
             if not run:
-                console.log(f"Uploaded query {query_id}. Exiting..")
                 break
 
             result = xog.run_query(query_id)[:limit]
             with console.pager(styles=True, links=True):
                 w.write(query_id, result)
-
-            if once:
-                break
 
     console.log(f"Uploaded query {query_id}. Exiting..")
 
@@ -98,24 +83,10 @@ def edit(
 @runner.command(name="id")
 def run_with_id(
     query_id: str = typer.Argument(..., help="NSQL Query ID"),
-    env: Optional[str] = NotRequiredAutoENV,
-    output: typer.FileTextWrite = typer.Option(
-        "-",
-        "--output",
-        "-o",
-        help="Save output to FILENAME.",
-        writable=True,
-    ),
-    limit: Optional[int] = typer.Option(
-        None,
-        "--limit",
-        "-n",
-        help="Limit output to n lines.",
-        writable=True,
-    ),
-    format: Format = typer.Option(
-        Format.table, "--format", "-f", case_sensitive=False, show_choices=True
-    ),
+    env: Optional[str] = opts.EnvOpt,
+    output: typer.FileTextWrite = opts.OutputOpt,
+    limit: Optional[int] = opts.LimitOpt,
+    format: Format = opts.FormatOpt,
     xog: str = typer.Option(None, hidden=True),
 ):
     """
@@ -135,31 +106,18 @@ def file(
     nsql_path: typer.FileText = typer.Argument(
         ..., help="SQL/NSQL code file path.", exists=True, readable=True
     ),
-    db: Databases = DbOption,
+    db: Database = opts.DbOpt,
     to_nsql: bool = typer.Option(
         False,
         "--to-nsql",
         "-t",
-        help="Transpile to NSQL before running it. True if FILENAME ext is .sql",
+        help="Transpile to NSQL before running it.\nDefault: True if FILENAME ext is .sql, else False.",
     ),
-    env: Optional[str] = NotRequiredAutoENV,
-    output: typer.FileTextWrite = typer.Option(
-        "-",
-        "--output",
-        "-o",
-        help="Save output to FILENAME.",
-        writable=True,
-    ),
-    format: Format = typer.Option(
-        Format.table, "--format", "-f", case_sensitive=False, show_choices=True
-    ),
-    limit: Optional[int] = typer.Option(
-        None,
-        "--limit",
-        "-n",
-        help="Limit output to n lines.",
-        writable=True,
-    ),
+    env: Optional[str] = opts.EnvOpt,
+    output: typer.FileTextWrite = opts.OutputOpt,
+    format: Format = opts.FormatOpt,
+    limit: Optional[int] = opts.LimitOpt,
+    query_id: str = typer.Option(QUERY_CODE, help="Save query with a specific id."),
 ):
     """
     Run a query from FILENAME on env.
@@ -169,14 +127,14 @@ def file(
     to_nsql = to_nsql or Path(nsql_path.name).match("*.sql")
 
     if nsql_path.isatty():
-        console.print("Copy & paste your NSQL")
+        console.log("Reading from stdin...")
 
     xog = XOG(env_url, username, passwd)
     with console.status("Reading file..."):
         nsql = parser.sql_to_nsql(nsql_path) if to_nsql else nsql_path.read()
 
     with console.status("Uploading query..."):
-        query_id = xog.upload_query(nsql, db)
+        query_id = xog.upload_query(nsql, db, QueryID(query_id))
 
     run_and_write(xog, query_id, output, format, limit)
     console.log("Done!")
@@ -187,9 +145,7 @@ def file(
 )
 def transpile(
     sql: Path = typer.Argument(..., exists=True, readable=True),
-    output: typer.FileTextWrite = typer.Option(
-        "-", "--output", "-o", help="Save NSQL to FILENAME.", writable=True
-    ),
+    output: typer.FileTextWrite = opts.OutputOpt,
 ):
     """
     Converts SQL to NSQL.\n

@@ -1,10 +1,11 @@
 from __future__ import annotations
+
+import json
 from collections.abc import Callable
 from csv import DictWriter
 from dataclasses import dataclass, field
 from enum import Enum
 from io import StringIO
-import json
 from pathlib import Path
 from typing import Any, Final, Literal, NewType, Optional, TextIO, TypeAlias
 
@@ -36,6 +37,7 @@ class InvalidLoginError(Exception):
 class XogException(Exception):
     msg: str
     exc: str
+    raw: Xml
 
 
 class QueryRunnerError(Exception):
@@ -62,7 +64,7 @@ class NotFoundError(Exception):
     ...
 
 
-class Databases(str, Enum):
+class Database(str, Enum):
     dwh = "Datawarehouse"
     niku = "Niku"
 
@@ -78,7 +80,7 @@ class Xml:
     __elements: etree._Element = field(init=False)
 
     @classmethod
-    def create(cls, tag: str, *, nsmap: dict[Any, Any], **attrs: str):
+    def create(cls, tag: str, *, nsmap: dict[Any, Any], **attrs: str | bytes):
         if ":" in tag:
             ns, tag = tag.split(":")
             if ns not in nsmap:
@@ -100,7 +102,7 @@ class Xml:
             e = parse_xml(f)
         return cls.from_element(e)
 
-    def write(self, f: Path | TextIO):
+    def write_to(self, f: Path | TextIO):
         if isinstance(f, Path):
             with f.open("wb") as fh:
                 return fh.write(bytes(self))
@@ -128,7 +130,7 @@ class Xml:
     def find(self, child: str, ns: dict[Any, Any] | None = None) -> Xml | None:
         e = self.__elements.find(child, namespaces=ns)
         if e is None:
-            return
+            return None
         return self.from_element(e)
 
     def get(self, attr: str, default: Optional[str]):
@@ -153,7 +155,7 @@ class Xml:
                 self.__elements,
                 etree.QName(qnsmap.get(ns), element_name),
                 nsmap,  # type: ignore
-                **attrs,
+                **attrs,  # type: ignore
             )
         )
 
@@ -249,25 +251,25 @@ class XOG:
 
         if xpath := tree.xpath("//Exception/text()", NS):
             description = str(tree.xpath("//Description/text()", NS)[0])
-            raise XogException(description[:250], exc=str(xpath[0]))
+            raise XogException(description[:250], exc=str(xpath[0]), raw=tree)
         return tree
 
-    def query_get(self, query_id: QueryID, db: Databases) -> Xml:
+    def query_get(self, query_id: QueryID, db: Database) -> Xml:
         try:
             r = self.send(build_query_read_package(query_id, db))
         except XogException as e:
             raise NotFoundError(e.exc) from e
-        query = r.xpath(f"//query[@code='{query_id}']")
-        if not query:
+        query_path = r.xpath(f"//query[@code='{query_id}']")
+        if not query_path:
             raise NotFoundError(f"Query with id = {query_id!r} does not exist.")
-        query, *_ = query
+        query, *_ = query_path
         nsql = query.find("nsql")
         if nsql is None:
             raise NotFoundError(f"Failed getting <nsql> for {query_id!r}")
         return nsql
 
     def upload_query(
-        self, nsql: str, db: Databases, query_id: QueryID = QUERY_CODE
+        self, nsql: str, db: Database, query_id: QueryID = QUERY_CODE
     ) -> QueryID:
         """
         XOGs a query (ContentPackage)
@@ -321,7 +323,7 @@ class Writer:
                 return self.to_table(query_id, items)
 
     def write_xml(self, result: Xml) -> int:
-        return result.write(self.buff)  # type: ignore
+        return result.write_to(self.buff)  # type: ignore
 
     def write(self, query_id: QueryID, items: QueryResult) -> None:
         result = self._result(query_id, items)
@@ -332,7 +334,7 @@ class Writer:
 
     def to_table(self, query_id: QueryID, items: QueryResult) -> Table:
         if not items:
-            raise EmptyQueryResultError()
+            raise EmptyQueryResultError(f"{query_id} returned 0 rows")
 
         table = Table(
             title=query_id,
@@ -348,7 +350,7 @@ class Writer:
             table.add_row(*row.values())
         return table
 
-    def to_csv(self, items: QueryResult, delimiter=",") -> CSV:
+    def to_csv(self, items: QueryResult, delimiter: str = ",") -> CSV:
         if not items:
             raise EmptyQueryResultError()
         buff = StringIO()
@@ -390,7 +392,7 @@ def build_content_pack(
     return root
 
 
-def build_query_read_package(query_id: QueryID, source: Databases):
+def build_query_read_package(query_id: QueryID, source: Database):
     def query_query(root: Xml):
         query = root.create_subelement("QueryQuery")
         filter = query.create_subelement("Filter", name="code", criteria="EQUALS")
@@ -403,7 +405,7 @@ def build_query_read_package(query_id: QueryID, source: Databases):
     )
 
 
-def build_query_write_package(nsql_code: str, db: Databases, query_id: QueryID):
+def build_query_write_package(nsql_code: str, db: Database, query_id: QueryID):
     def query_run(root: Xml):
 
         content_pack = root.create_subelement("contentPack", update="true")
@@ -459,7 +461,7 @@ def create_login_envelope(username: str, password: str):
 
 
 def build_query_run_xog(query_id: str):
-    query = Xml.create("Query", nsmap={None: "http://www.niku.com/xog/Query"})  # type: ignore
+    query = Xml.create("Query", nsmap={None: "http://www.niku.com/xog/Query"})
     code = query.create_subelement("Code")
     code.text = query_id
     return query
@@ -483,5 +485,5 @@ def parse_xml(f: TextIO) -> etree._Element:
 
 
 def read_xml(path: Path) -> etree._Element:
-    with path.open("r") as f:
+    with path.open("rt") as f:
         return parse_xml(f)

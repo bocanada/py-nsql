@@ -5,17 +5,16 @@ from typing import TextIO, TypeGuard, cast
 
 import sqlparse
 
-
 Identifiers = list[sqlparse.sql.Identifier]
 
 
-def is_from_token(token):
+def is_from_token(token) -> bool:
     return sqlparse.sql.imt(token, t=sqlparse.tokens.Keyword) and token.match(
         sqlparse.tokens.Keyword, values="FROM"
     )
 
 
-def is_where_token(token) -> TypeGuard[sqlparse.sql.Where]:
+def is_where_token(token: sqlparse.tokens._TokenType) -> TypeGuard[sqlparse.sql.Where]:
     return sqlparse.sql.imt(token, i=sqlparse.sql.Where)
 
 
@@ -58,7 +57,7 @@ def _parse_identifier(token: sqlparse.sql.Identifier, is_first: bool) -> str:
             alias = cast(str, tokens.pop().get_name())
             return create_select(is_first, str(parens), alias)
         case _:
-            select = table if table == real_name else f"{table}.{real_name}"
+            select: str = str(table) if table == real_name else f"{table}.{real_name}"
             return create_select(is_first, select, alias)
 
 
