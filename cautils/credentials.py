@@ -7,8 +7,14 @@ from rich.panel import Panel
 from rich.prompt import Confirm
 
 from cautils import console
-from cautils.utils import (complete_env, create_env, get_config_path, get_envs,
-                           save_envs, update_credentials)
+from cautils.utils import (
+    complete_env,
+    create_env,
+    get_config_path,
+    get_envs,
+    save_envs,
+    update_credentials,
+)
 
 
 class Credentials(str, Enum):

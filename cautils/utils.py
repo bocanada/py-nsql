@@ -2,10 +2,10 @@ import json
 from pathlib import Path
 from typing import Iterable, Optional, TypeAlias
 
-import typer
 from rich.prompt import Confirm, Prompt
+import typer
 
-from cautils import APP_NAME, console
+from cautils import APP_NAME, console, err_console
 
 Env: TypeAlias = dict[str, str]
 Envs: TypeAlias = dict[str, dict[str, str]]
@@ -42,9 +42,9 @@ def ask_for_creds() -> Creds:
     Asks the user for credentials from STDIN.
     """
     (env_url, username), passwd = [
-        Prompt.ask(prompt, console=console)
+        Prompt.ask(prompt, console=err_console)
         for prompt in ["Environment URL", "Username"]
-    ], Prompt.ask("Password", password=True, console=console)
+    ], Prompt.ask("Password", password=True, console=err_console)
 
     if any(v == "" for v in [env_url, username, passwd]):
         raise ValueError("Expected non-empty values.")
@@ -84,9 +84,9 @@ def get_env_creds(env: Optional[str]) -> Creds:
         env_url, username, passwd = ask_for_creds()
 
         if Confirm.ask(
-            "Do you want to save this to your config file?", console=console
+            "Do you want to save this to your config file?", console=err_console
         ):
-            name = Prompt.ask("Name this env")
+            name = Prompt.ask("Name this env", console=err_console)
             envs = create_env(envs, name, env_url, username, passwd)
             save_envs(envs, config_path)
     else:
@@ -109,6 +109,6 @@ def ask():
     Asks if the user wants to continue.
     If not, raise typer.Exit
     """
-    if not Confirm.ask("Continue?", console=console, default=True):
+    if not Confirm.ask("Continue?", console=err_console, default=True):
         console.log("Ok! Exiting...")
         raise typer.Abort()

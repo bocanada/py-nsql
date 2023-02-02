@@ -6,7 +6,7 @@ from rich.columns import Columns
 from rich.panel import Panel
 from rich.rule import Rule
 
-from cautils import APP_NAME, console
+from cautils import APP_NAME, err_console
 from cautils import opts
 from cautils.credentials import app as creds
 from cautils.queries import queries
@@ -35,8 +35,8 @@ def print_header(env_url: str, input_file: str, output_file: str, title: str = "
         expand=True,
         align="center",
     )
-    console.print(Rule(title))
-    console.print(panel, style="green")
+    err_console.print(Rule(title))
+    err_console.print(panel, style="green")
 
 
 def print_xml_preview(
@@ -44,7 +44,7 @@ def print_xml_preview(
 ):
     if not limit:
         return
-    console.print(
+    err_console.print(
         Panel.fit(
             xml.syntax(limit),
             title="Input preview",
@@ -72,7 +72,7 @@ def xog(
     env_url, username, passwd = get_env_creds(env)
     print_header(env_url, input_file.name, output.name)
 
-    with console.status("Reading XOG..."), input_file as f:
+    with err_console.status("Reading XOG..."), input_file as f:
         xml = Xml.read(f)
 
     if preview_lines:
@@ -82,19 +82,19 @@ def xog(
         header[0].get("action", "?") if (header := xml.xpath("//Header")) else "read"
     )
 
-    with console.status(f"Running {action} XOG..."), XOG(
+    with err_console.status(f"Running {action} XOG..."), XOG(
         env_url, username, passwd, timeout=timeout
     ) as client:
         try:
             resp = client.send(xml)
         except XogException as e:
             # Catch the exception so we can save it to the output file.
-            console.print_exception()
+            err_console.print_exception()
             resp = e.raw
 
-    with console.status("Writing output file..."):
+    with err_console.status("Writing output file..."):
         written = resp.write_to(output)
-    console.log(f"Wrote {written} bytes")
+    err_console.log(f"Wrote {written} bytes")
 
 
 if __name__ == "__main__":

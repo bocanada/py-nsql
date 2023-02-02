@@ -1,6 +1,6 @@
 [tool.poetry]
 name = "cautils"
-version = "0.2.1"
+version = "0.3.1"
 description = ""
 authors = ["Mauro M. <24578415+Bocanada@users.noreply.github.com>"]
 readme = "README.md"

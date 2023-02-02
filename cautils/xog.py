@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import json
-from collections.abc import Callable
+from collections.abc import Callable, Iterable
 from csv import DictWriter
 from dataclasses import dataclass, field
 from enum import Enum
@@ -14,7 +14,7 @@ from lxml import etree
 from rich.console import Console
 from rich.syntax import Syntax
 from rich.table import Table
-from typer import FileTextWrite
+from typer import BadParameter, FileTextWrite
 
 NS = {
     "xog": "http://www.niku.com/xog",
@@ -38,6 +38,10 @@ class XogException(Exception):
     msg: str
     exc: str
     raw: Xml
+
+
+class EmptyError(Exception):
+    ...
 
 
 class QueryRunnerError(Exception):
@@ -64,6 +68,100 @@ class NotFoundError(Exception):
     ...
 
 
+class SortDirection(str, Enum):
+    asc = "asc"
+    desc = "desc"
+
+
+@dataclass
+class SortColumn:
+    column: str
+    direction: SortDirection
+
+    def to_xml_node(self) -> Xml:
+        column = Xml.create("Column")
+        name = column.create_subelement("Name")
+        name.text = self.column
+        name = column.create_subelement("Direction")
+        name.text = self.direction.value
+        return column
+
+    @classmethod
+    def from_colon_separated_item(
+        cls,
+        items: str,
+    ) -> SortColumn:
+        column, value = items.split(":")
+        try:
+            return cls(column, SortDirection(value.lower()))
+        except ValueError:
+            raise BadParameter(
+                f"{value!r} is not one of: {', '.join(map(repr, SortDirection._member_names_))}",
+                None,
+                None,
+                "sort",
+            )
+
+
+class FilterType(str, Enum):
+    lt = "lt"
+    gt = "gt"
+    eq = "eq"
+    like = "like"
+
+
+@dataclass
+class Filter:
+    type: FilterType
+    column_name: str
+    value: str
+
+    @classmethod
+    def from_colon_separated_item(
+        cls,
+        ty: FilterType,
+        items: str,
+    ) -> Filter:
+        try:
+            items_list = items.split(":")
+            column, value = items_list
+            return cls(ty, column, value)
+        except ValueError:
+            raise BadParameter(
+                f"Expected key:value pairs but found: {items!r}", None, None, ty.name
+            )
+
+    @classmethod
+    def from_colon_separated_items(
+        cls,
+        ty: FilterType,
+        items: list[str],
+    ) -> list[Filter]:
+        return [cls.from_colon_separated_item(ty, item) for item in items]
+
+    def to_xml_node(self):
+        node = Xml.create(self.tag())
+        node.text = self.value
+        return node
+
+    def tag(self) -> str:
+        if self.type is FilterType.eq:
+            return self.column_name
+        if self.type is FilterType.like:
+            return f"{self.column_name}_wildcard"
+        if self.type is FilterType.gt:
+            return f"{self.column_name}_from"
+        if self.type is FilterType.lt:
+            return f"{self.column_name}_to"
+        raise ValueError(f"Expected {FilterType!r} but got {self.type!r}")
+
+
+@dataclass
+class Query:
+    text: str
+    id: QueryID
+
+
 class Database(str, Enum):
     dwh = "Datawarehouse"
     niku = "Niku"
@@ -80,7 +178,7 @@ class Xml:
     __elements: etree._Element = field(init=False)
 
     @classmethod
-    def create(cls, tag: str, *, nsmap: dict[Any, Any], **attrs: str | bytes):
+    def create(cls, tag: str, *, nsmap: dict[Any, Any] = {}, **attrs: str | bytes):
         if ":" in tag:
             ns, tag = tag.split(":")
             if ns not in nsmap:
@@ -207,6 +305,9 @@ class XOG:
         self.login()
 
     def login(self):
+        """
+        Gets and sets a valid SessionID on the client.
+        """
         try:
             tree = self.send(
                 create_login_envelope(self.username, self.password), should_auth=False
@@ -254,7 +355,7 @@ class XOG:
             raise XogException(description[:250], exc=str(xpath[0]), raw=tree)
         return tree
 
-    def query_get(self, query_id: QueryID, db: Database) -> Xml:
+    def query_get(self, query_id: QueryID, db: Database) -> Query:
         try:
             r = self.send(build_query_read_package(query_id, db))
         except XogException as e:
@@ -265,8 +366,10 @@ class XOG:
         query, *_ = query_path
         nsql = query.find("nsql")
         if nsql is None:
-            raise NotFoundError(f"Failed getting <nsql> for {query_id!r}")
-        return nsql
+            raise NotFoundError(f"Failed getting <nsql> for {query_id!r}.")
+        if not nsql.text:
+            raise EmptyError(f"Query {query_id!r} is empty.")
+        return Query(nsql.text, query_id)
 
     def upload_query(
         self, nsql: str, db: Database, query_id: QueryID = QUERY_CODE
@@ -280,12 +383,25 @@ class XOG:
             raise ContentPackageException(e.exc) from e
         return query_id
 
-    def run_query(self, query_id: QueryID) -> QueryResult:
+    def run_query(
+        self,
+        query_id: QueryID,
+        filters: Iterable[Filter],
+        sort: Iterable[SortColumn],
+        page_size: int | None = None,
+    ) -> QueryResult:
         """
         Sends a Query XOG
         """
         try:
-            tree = self.send(build_query_run_xog(query_id))
+            tree = self.send(
+                build_query_run_xog(
+                    query_id,
+                    filters=filters,
+                    page_size=page_size,
+                    sort=sort,
+                )
+            )
         except XogException as e:
             raise QueryRunnerError(e.exc) from e
         return get_results(tree)
@@ -425,6 +541,14 @@ def build_query_write_package(nsql_code: str, db: Database, query_id: QueryID):
 
 
 def create_envelope(transform_header: Callable[[Xml], Any], payload_root: Xml) -> Xml:
+    # <soap:Envelope>
+    # <soap:Header>
+    # <xog:Auth>
+    # </xog:Auth>
+    # </soap:Header>
+    # <soap:Body>
+    # </soap:Body>
+    # </soap:Envelope>
     root = Xml.create("soap:Envelope", nsmap=NS)
     header = root.create_subelement("Header", ns="soap")
     auth = header.create_subelement("Auth", ns="xog")
@@ -460,10 +584,32 @@ def create_login_envelope(username: str, password: str):
     return create_envelope(id, login)
 
 
-def build_query_run_xog(query_id: str):
+def build_query_run_xog(
+    query_id: str,
+    filters: Iterable[Filter],
+    sort: Iterable[SortColumn],
+    page_size: int | None = None,
+):
     query = Xml.create("Query", nsmap={None: "http://www.niku.com/xog/Query"})
     code = query.create_subelement("Code")
     code.text = query_id
+    if filters:
+        filter = query.create_subelement("Filter")
+        for pred in filters:
+            filter.append(pred.to_xml_node())
+    if page_size:
+        slice = Xml.create("Slice")
+        s = slice.create_subelement("Size")
+        s.text = str(page_size)
+        # TODO: Should we allow pagination?
+        n = slice.create_subelement("Number")
+        n.text = "0"
+        query.append(slice)
+    if sort:
+        s = query.create_subelement("Sort")
+        for clm in sort:
+            s.append(clm.to_xml_node())
+
     return query
 
 

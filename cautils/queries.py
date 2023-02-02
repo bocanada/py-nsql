@@ -1,19 +1,24 @@
+from collections.abc import Iterable
 from pathlib import Path
 from tempfile import NamedTemporaryFile
-from typing import Optional, cast
+from typing import Optional
 
 import typer
 
-from cautils import console, opts, parser
+from cautils import console, err_console, opts, parser
 from cautils.utils import ask, get_env_creds
 from cautils.xog import (
-    QUERY_CODE,
-    XOG,
     ContentPackageException,
     Database,
+    Filter,
+    FilterType,
     Format,
+    QUERY_CODE,
     QueryID,
+    SortColumn,
+    SortDirection,
     Writer,
+    XOG,
 )
 
 queries = typer.Typer(no_args_is_help=True)
@@ -35,20 +40,18 @@ def edit(
 ) -> None:
     """
     Edit a query interactively on the environment.
-    It will run until you make no changes on the NSQL.
+    It will run until you make no changes on the query.
     """
     env_url, username, passwd = get_env_creds(env)
     query_id = QueryID(query_id)
 
     xog = XOG(env_url, username, passwd, timeout)
-    with console.status("Getting query..."):
+    with err_console.status("Getting query..."):
         nsql = xog.query_get(query_id, db)
 
     w = Writer(output, format, console)
 
     last_qry = ""
-
-    assert nsql.text is not None, f"Couldn't get query with id {query_id}"
 
     with NamedTemporaryFile("w+", suffix=".sql", prefix=query_id) as f:
         f.write(nsql.text)
@@ -60,24 +63,24 @@ def edit(
             # Go back to the start of the file, and dump its contents
             f.seek(0)
             if last_qry == (last_qry := f.read()):
-                console.log("No changes were made. Exiting...")
+                err_console.log("No changes were made. Exiting...")
                 raise typer.Exit(0)
             try:
-                with console.status("Uploading query..."):
+                with err_console.status("Uploading query..."):
                     xog.upload_query(last_qry, db, query_id)
             except ContentPackageException:
-                console.print_exception()
+                err_console.print_exception()
                 ask()
                 continue
 
             if not run:
-                break
+                continue
 
-            result = xog.run_query(query_id)[:limit]
-            with console.pager(styles=True, links=True):
+            result = xog.run_query(query_id, [], [], limit)
+            with err_console.pager(styles=True, links=True):
                 w.write(query_id, result)
 
-    console.log(f"Uploaded query {query_id}. Exiting..")
+    err_console.log(f"Uploaded query {query_id}. Exiting..")
 
 
 @runner.command(name="id")
@@ -87,18 +90,24 @@ def run_with_id(
     output: typer.FileTextWrite = opts.OutputOpt,
     limit: Optional[int] = opts.LimitOpt,
     format: Format = opts.FormatOpt,
-    xog: str = typer.Option(None, hidden=True),
+    # Filters
+    eq: list[str] = opts.EqOpt,
+    like: list[str] = opts.LikeOpt,
+    lt: list[str] = opts.LtOpt,
+    gt: list[str] = opts.GtOpt,
+    # Sorting cols
+    sort: list[str] = opts.SortOpt,
 ):
     """
     Run a query on the specified ENV and write it to STDOUT or OUTPUT.
     """
     env_url, username, passwd = get_env_creds(env)
-    xog_c = cast(XOG, xog)
-    xog_c = xog_c or XOG(env_url, username, passwd)
-
     query_id = QueryID(query_id)
-    with xog_c:
-        run_and_write(xog_c, query_id, output, format, limit)
+    filters = parse_filters(eq, like, lt, gt)
+    sort_cols = parse_sort(sort)
+
+    with XOG(env_url, username, passwd) as xog:
+        run_and_write(xog, query_id, output, format, limit, filters, sort_cols)
 
 
 @runner.command()
@@ -118,6 +127,13 @@ def file(
     format: Format = opts.FormatOpt,
     limit: Optional[int] = opts.LimitOpt,
     query_id: str = typer.Option(QUERY_CODE, help="Save query with a specific id."),
+    # Filters
+    eq: list[str] = opts.EqOpt,
+    like: list[str] = opts.LikeOpt,
+    lt: list[str] = opts.LtOpt,
+    gt: list[str] = opts.GtOpt,
+    # Sorting cols
+    sort: list[str] = opts.SortOpt,
 ):
     """
     Run a query from FILENAME on env.
@@ -127,17 +143,20 @@ def file(
     to_nsql = to_nsql or Path(nsql_path.name).match("*.sql")
 
     if nsql_path.isatty():
-        console.log("Reading from stdin...")
+        err_console.log("Reading from stdin...")
 
     xog = XOG(env_url, username, passwd)
-    with console.status("Reading file..."):
+    with err_console.status("Reading file..."):
         nsql = parser.sql_to_nsql(nsql_path) if to_nsql else nsql_path.read()
 
-    with console.status("Uploading query..."):
+    with err_console.status("Uploading query..."):
         query_id = xog.upload_query(nsql, db, QueryID(query_id))
 
-    run_and_write(xog, query_id, output, format, limit)
-    console.log("Done!")
+    filters = parse_filters(eq, like, lt, gt)
+    sort_cols = parse_sort(sort)
+
+    run_and_write(xog, query_id, output, format, limit, filters, sort_cols)
+    err_console.log("Done!")
 
 
 @queries.command(
@@ -154,7 +173,7 @@ def transpile(
         - Spaces between the OPENPAREN and OVER on window functions are not allowed.\n
         - CTEs are prohibited. NSQL doesn't permit any kind of code before the SELECT keyword.\n
     """
-    with console.status("Transpiling..."), sql.open("r") as f:
+    with err_console.status("Transpiling..."), sql.open("r") as f:
         output.write(parser.sql_to_nsql(f))
 
 
@@ -164,11 +183,35 @@ def run_and_write(
     output: typer.FileTextWrite,
     format: Format,
     limit: Optional[int],
+    filters: Iterable[Filter] = [],
+    sort: Iterable[SortColumn] = [],
 ):
     query_id = QueryID(query_id)
 
-    with console.status("Running query..."):
-        result = xog.run_query(query_id)[:limit]
+    with err_console.status("Running query..."):
+        result = xog.run_query(
+            query_id,
+            filters,
+            sort,
+            limit,
+        )
 
-    with console.status(f"Writing {len(result)} lines to {output.name}...\n"):
+    with err_console.status(f"Writing {len(result)} lines to {output.name}...\n"):
         Writer(output, format, console).write(query_id, result)
+
+
+def parse_sort(sort: Iterable[str]):
+    return [SortColumn.from_colon_separated_item(col) for col in sort]
+
+
+def parse_filters(eq: list[str], like: list[str], lt: list[str], gt: list[str]):
+    from itertools import chain
+
+    return chain.from_iterable(
+        [
+            Filter.from_colon_separated_items(FilterType.eq, eq),
+            Filter.from_colon_separated_items(FilterType.like, like),
+            Filter.from_colon_separated_items(FilterType.lt, lt),
+            Filter.from_colon_separated_items(FilterType.gt, gt),
+        ]
+    )
