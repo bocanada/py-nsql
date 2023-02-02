@@ -1,17 +1,19 @@
 from pathlib import Path
 from typing import Optional
 
-import typer
 from rich.columns import Columns
 from rich.panel import Panel
 from rich.rule import Rule
+import typer
 
 from cautils import APP_NAME, err_console
 from cautils import opts
 from cautils.credentials import app as creds
+from cautils.exceptions import XogException
 from cautils.queries import queries
-from cautils.xog import XOG, Xml, XogException
+from cautils.thin_xml import Xml
 from cautils.utils import get_env_creds
+from cautils.xog import XOG
 
 app = typer.Typer(
     name=APP_NAME,

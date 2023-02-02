@@ -6,9 +6,9 @@ from typing import Optional
 import typer
 
 from cautils import console, err_console, opts, parser
+from cautils.exceptions import ContentPackageException
 from cautils.utils import ask, get_env_creds
 from cautils.xog import (
-    ContentPackageException,
     Database,
     Filter,
     FilterType,
@@ -16,7 +16,6 @@ from cautils.xog import (
     QUERY_CODE,
     QueryID,
     SortColumn,
-    SortDirection,
     Writer,
     XOG,
 )
