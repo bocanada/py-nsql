@@ -1,3 +1,4 @@
+from collections.abc import Iterable
 import typer
 
 from cautils.utils import complete_env
@@ -68,8 +69,18 @@ LtOpt = typer.Option(
 GtOpt = typer.Option(
     None, "--to", "-gt", metavar="COLUMN:VALUE", help="Greater than filter."
 )
+
+
+def _complete_sort_opt(incomplete: str) -> Iterable[str]:
+    members = tuple(f":{member}" for member in SortDirection._member_names_)
+    if incomplete.endswith(members):
+        return []
+    return [f"{incomplete}{member}" for member in members]
+
+
 SortOpt = typer.Option(
     None,
     metavar=f"COLUMN:[{'|'.join(SortDirection._member_names_)}]",
+    autocompletion=_complete_sort_opt,
     help="Sort on multiple columns.",
 )
